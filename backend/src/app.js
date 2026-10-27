@@ -3,6 +3,9 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 
 import authRoutes from "./routes/auth.routes.js";
+import userRoutes from "./routes/user.routes.js";
+import chatRoutes from "./routes/chat.routes.js";
+import messageRoutes from "./routes/message.routes.js";
 
 const app = express();
 
@@ -31,6 +34,9 @@ app.get("/api/health", (req, res) => {
 
 // Authentication routes
 app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/chats", chatRoutes);
+app.use("/api/messages", messageRoutes);
 
 // 404 handler
 app.use((req, res) => {
