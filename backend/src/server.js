@@ -1,12 +1,13 @@
+import "dotenv/config";
 import http from "http";
-import app from "./app.js";
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
-import cookie from "cookie";
-import "dotenv/config";
+import * as cookie from "cookie";
 
+import app from "./app.js";
 import User from "./models/User.js";
 import Chat from "./models/Chat.js";
+import connectDB from "./config/db.js";
 
 const PORT = process.env.PORT || 5000;
 
@@ -22,24 +23,41 @@ const io = new Server(server, {
 // Make Socket.IO available to Express controllers.
 app.set("io", io);
 
-// Authenticate socket connections using the HTTP-only JWT cookie.
+// Store connected sockets for each user.
+const onlineUsers = new Map();
+
+app.set("onlineUsers", onlineUsers);
+
+// Authenticate Socket.IO connections.
 io.use(async (socket, next) => {
   try {
     const cookieHeader = socket.handshake.headers.cookie;
+    let token;
 
-    if (!cookieHeader) {
-      return next(new Error("Authentication required"));
+    if (cookieHeader) {
+      const cookies = cookie.parse(cookieHeader);
+      token = cookies.token;
     }
 
-    const cookies = cookie.parse(cookieHeader);
-    const token = cookies.token;
+    // Support the backend test client.
+    if (
+      !token &&
+      typeof socket.handshake.auth?.token === "string"
+    ) {
+      token = socket.handshake.auth.token;
+    }
 
     if (!token) {
       return next(new Error("Authentication token missing"));
     }
 
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET is not configured");
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    // Ensure this matches the payload created by your login controller.
     const user = await User.findById(decoded.id).select("_id name");
 
     if (!user) {
@@ -50,14 +68,17 @@ io.use(async (socket, next) => {
 
     next();
   } catch (error) {
+    console.error(
+      "Socket authentication error:",
+      error.name,
+      error.message
+    );
+
     next(new Error("Invalid or expired authentication token"));
   }
 });
 
-// Store connected sockets for each user.
-// A user may have multiple tabs or devices connected.
-const onlineUsers = new Map();
-
+// Handle authenticated socket connections.
 io.on("connection", (socket) => {
   const userId = socket.user._id.toString();
 
@@ -70,12 +91,11 @@ io.on("connection", (socket) => {
   // Join the user's private room.
   socket.join(`user:${userId}`);
 
-  // Notify other connected clients that this user is online.
   socket.broadcast.emit("userOnline", { userId });
 
   console.log(`User connected: ${userId}`);
 
-  // Join a conversation only after verifying membership.
+  // Join a conversation after verifying membership.
   socket.on("joinChat", async (chatId, callback) => {
     try {
       if (
@@ -116,13 +136,17 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Leave a conversation room.
+  // Leave a conversation.
   socket.on("leaveChat", (chatId) => {
-    if (typeof chatId === "string") {
+    if (
+      typeof chatId === "string" &&
+      /^[a-fA-F0-9]{24}$/.test(chatId)
+    ) {
       socket.leave(`chat:${chatId}`);
     }
   });
 
+  // Handle disconnection.
   socket.on("disconnect", () => {
     const userSockets = onlineUsers.get(userId);
 
@@ -143,9 +167,18 @@ io.on("connection", (socket) => {
   });
 });
 
-// Allow other backend modules to access online user information.
-app.set("onlineUsers", onlineUsers);
+// Connect to MongoDB before accepting requests.
+async function startServer() {
+  try {
+    await connectDB();
 
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+    server.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server startup failed:", error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
