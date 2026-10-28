@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -8,11 +9,8 @@ import chatRoutes from "./routes/chat.routes.js";
 import messageRoutes from "./routes/message.routes.js";
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-
-// CORS
+// CORS configuration
 app.use(
   cors({
     origin: process.env.CLIENT_URL || "http://localhost:5173",
@@ -20,7 +18,7 @@ app.use(
   })
 );
 
-// Parse incoming requests
+// Parse incoming request bodies
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -35,7 +33,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Authentication routes
+// API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chats", chatRoutes);

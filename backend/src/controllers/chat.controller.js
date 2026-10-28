@@ -7,7 +7,12 @@ import Message from "../models/Message.js";
 // Create a new direct conversation or return an existing one.
 export const createChat = async (req, res) => {
   try {
-    const { userId } = req.body;
+    console.log("Request method:", req.method);
+    console.log("Request URL:", req.originalUrl);
+    console.log("Content-Type:", req.headers["content-type"]);
+    console.log("Request body:", req.body);
+    console.log("Authenticated user:", req.user?._id);
+    const { userId } = req.body || {};
     const currentUserId = req.user._id;
 
     // Validate the requested user ID.
