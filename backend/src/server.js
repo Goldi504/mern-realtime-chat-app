@@ -20,30 +20,27 @@ const io = new Server(server, {
   },
 });
 
-// Make Socket.IO available to Express controllers.
 app.set("io", io);
 
-// Store connected sockets for each user.
+// userId -> Set of connected socket IDs
 const onlineUsers = new Map();
 
 app.set("onlineUsers", onlineUsers);
 
-// Authenticate Socket.IO connections.
+// Authenticate every Socket.IO connection.
 io.use(async (socket, next) => {
   try {
-    const cookieHeader = socket.handshake.headers.cookie;
     let token;
 
+    // Browser connections may authenticate using the HTTP-only cookie.
+    const cookieHeader = socket.handshake.headers.cookie;
+
     if (cookieHeader) {
-      const cookies = cookie.parse(cookieHeader);
-      token = cookies.token;
+      token = cookie.parse(cookieHeader).token;
     }
 
-    // Support the backend test client.
-    if (
-      !token &&
-      typeof socket.handshake.auth?.token === "string"
-    ) {
+    // Also support clients that explicitly provide a bearer token.
+    if (!token && typeof socket.handshake.auth?.token === "string") {
       token = socket.handshake.auth.token;
     }
 
@@ -57,8 +54,13 @@ io.use(async (socket, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Ensure this matches the payload created by your login controller.
-    const user = await User.findById(decoded.id).select("_id name");
+    if (!decoded.id) {
+      return next(new Error("Invalid authentication token"));
+    }
+
+    const user = await User.findById(decoded.id).select(
+      "_id name profilePic"
+    );
 
     if (!user) {
       return next(new Error("User not found"));
@@ -69,7 +71,7 @@ io.use(async (socket, next) => {
     next();
   } catch (error) {
     console.error(
-      "Socket authentication error:",
+      "Socket authentication failed:",
       error.name,
       error.message
     );
@@ -78,93 +80,148 @@ io.use(async (socket, next) => {
   }
 });
 
-// Handle authenticated socket connections.
-io.on("connection", (socket) => {
+// Handle authenticated connections.
+io.on("connection", async (socket) => {
   const userId = socket.user._id.toString();
 
-  if (!onlineUsers.has(userId)) {
-    onlineUsers.set(userId, new Set());
-  }
-
-  onlineUsers.get(userId).add(socket.id);
-
-  // Join the user's private room.
-  socket.join(`user:${userId}`);
-
-  socket.broadcast.emit("userOnline", { userId });
-
-  console.log(`User connected: ${userId}`);
-
-  // Join a conversation after verifying membership.
-  socket.on("joinChat", async (chatId, callback) => {
-    try {
-      if (
-        typeof chatId !== "string" ||
-        !/^[a-fA-F0-9]{24}$/.test(chatId)
-      ) {
-        return callback?.({
-          success: false,
-          message: "Invalid conversation ID",
-        });
-      }
-
-      const chat = await Chat.exists({
-        _id: chatId,
-        participants: socket.user._id,
-      });
-
-      if (!chat) {
-        return callback?.({
-          success: false,
-          message: "Conversation not found or access denied",
-        });
-      }
-
-      socket.join(`chat:${chatId}`);
-
-      return callback?.({
-        success: true,
-        message: "Joined conversation successfully",
-      });
-    } catch (error) {
-      console.error("Join chat error:", error);
-
-      return callback?.({
-        success: false,
-        message: "Failed to join conversation",
-      });
+  try {
+    // Track all connections belonging to this user.
+    if (!onlineUsers.has(userId)) {
+      onlineUsers.set(userId, new Set());
     }
-  });
 
-  // Leave a conversation.
-  socket.on("leaveChat", (chatId) => {
-    if (
-      typeof chatId === "string" &&
-      /^[a-fA-F0-9]{24}$/.test(chatId)
-    ) {
-      socket.leave(`chat:${chatId}`);
-    }
-  });
-
-  // Handle disconnection.
-  socket.on("disconnect", () => {
     const userSockets = onlineUsers.get(userId);
+    const wasOffline = userSockets.size === 0;
 
-    if (userSockets) {
-      userSockets.delete(socket.id);
+    userSockets.add(socket.id);
 
-      if (userSockets.size === 0) {
+    // Every connection automatically joins its private user room.
+    socket.join(`user:${userId}`);
+
+    // Update online status only on the first active connection.
+    if (wasOffline) {
+      await User.findByIdAndUpdate(userId, {
+        $set: { isOnline: true },
+      });
+
+      io.emit("userOnline", { userId });
+    }
+
+    console.log(`Socket connected: user=${userId}, socket=${socket.id}`);
+
+    // Join a conversation only after checking membership.
+    socket.on("joinChat", async (chatId, callback) => {
+      try {
+        if (
+          typeof chatId !== "string" ||
+          !/^[a-fA-F0-9]{24}$/.test(chatId)
+        ) {
+          return callback?.({
+            success: false,
+            message: "Invalid conversation ID",
+          });
+        }
+
+        const isMember = await Chat.exists({
+          _id: chatId,
+          participants: socket.user._id,
+        });
+
+        if (!isMember) {
+          return callback?.({
+            success: false,
+            message: "Conversation not found or access denied",
+          });
+        }
+
+        await socket.join(`chat:${chatId}`);
+
+        return callback?.({
+          success: true,
+          message: "Joined conversation successfully",
+          chatId,
+        });
+      } catch (error) {
+        console.error("Join conversation error:", error);
+
+        return callback?.({
+          success: false,
+          message: "Failed to join conversation",
+        });
+      }
+    });
+
+    // Leave a conversation.
+    socket.on("leaveChat", async (chatId, callback) => {
+      try {
+        if (
+          typeof chatId !== "string" ||
+          !/^[a-fA-F0-9]{24}$/.test(chatId)
+        ) {
+          return callback?.({
+            success: false,
+            message: "Invalid conversation ID",
+          });
+        }
+
+        await socket.leave(`chat:${chatId}`);
+
+        return callback?.({
+          success: true,
+          message: "Left conversation successfully",
+        });
+      } catch (error) {
+        console.error("Leave conversation error:", error);
+
+        return callback?.({
+          success: false,
+          message: "Failed to leave conversation",
+        });
+      }
+    });
+
+    // Handle disconnection without marking other active sessions offline.
+    socket.on("disconnect", async () => {
+      try {
+        const sockets = onlineUsers.get(userId);
+
+        if (!sockets) {
+          return;
+        }
+
+        sockets.delete(socket.id);
+
+        // A user may have multiple tabs or devices connected.
+        if (sockets.size > 0) {
+          return;
+        }
+
         onlineUsers.delete(userId);
 
-        socket.broadcast.emit("userOffline", {
-          userId,
-          lastSeen: new Date().toISOString(),
-        });
-      }
-    }
+        const lastSeen = new Date();
 
-    console.log(`User disconnected: ${userId}`);
-  });
+        await User.findByIdAndUpdate(userId, {
+          $set: {
+            isOnline: false,
+            lastSeen,
+          },
+        });
+
+        io.emit("userOffline", {
+          userId,
+          lastSeen: lastSeen.toISOString(),
+        });
+
+        console.log(`Socket disconnected: user=${userId}`);
+      } catch (error) {
+        console.error("Disconnect handling error:", error);
+      }
+    });
+  } catch (error) {
+    console.error("Socket connection setup failed:", error);
+
+    socket.disconnect(true);
+  }
 });
 
 // Connect to MongoDB before accepting requests.

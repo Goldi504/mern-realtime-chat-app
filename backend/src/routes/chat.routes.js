@@ -10,16 +10,13 @@ import { protect } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-// All chat endpoints require authentication.
-router.use(protect);
+// List conversations for the authenticated user
+router.get("/", protect, getChats);
 
-// Create or retrieve a direct conversation.
-router.post("/", createChat);
+// Create a conversation or return the existing one
+router.post("/", protect, createChat);
 
-// Retrieve all conversations for the current user.
-router.get("/", getChats);
-
-// Retrieve a specific conversation.
-router.get("/:chatId", getChatById);
+// Get a specific conversation
+router.get("/:chatId", protect, getChatById);
 
 export default router;

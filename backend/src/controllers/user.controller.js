@@ -21,8 +21,7 @@ export const searchUsers = async (req, res) => {
     }
 
     // Escape special regex characters supplied by the user
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
+const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const users = await User.find({
       _id: { $ne: req.user._id },
       $or: [

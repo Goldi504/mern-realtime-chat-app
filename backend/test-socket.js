@@ -1,119 +1,194 @@
 
 import "dotenv/config";
-import { io } from "socket.io-client";
-import jwt from "jsonwebtoken";
+import { io as createSocket } from "socket.io-client";
 
-const SERVER_URL = process.env.TEST_SOCKET_URL || "http://localhost:5000";
-const token = process.env.TEST_JWT_TOKEN;
+const BASE_URL = "http://localhost:5000";
 
-// 1. Validate environment variables
-if (!token) {
-  console.error("TEST_JWT_TOKEN is missing from backend/.env");
-  console.error("Please log in and provide a fresh JWT token.");
-  process.exit(1);
-}
+// Existing conversation between Rahul and Priya
+const CHAT_ID = "6ae2f7bdac16291713d87f3c";
 
-// 2. Inspect the JWT without printing the token
-const decoded = jwt.decode(token);
-
-if (!decoded || typeof decoded !== "object") {
-  console.error("Invalid JWT format.");
-  process.exit(1);
-}
-
-console.log("JWT format: valid");
-console.log("JWT has user ID:", Boolean(decoded.id));
-
-if (!decoded.id) {
-  console.error("JWT does not contain the expected 'id' field.");
-  process.exit(1);
-}
-
-console.log("JWT user ID:", decoded.id);
-
-// 3. Check token expiration
-if (decoded.exp) {
-  const expirationDate = new Date(decoded.exp * 1000);
-
-  console.log("JWT expiration:", expirationDate.toLocaleString());
-
-  if (decoded.exp * 1000 <= Date.now()) {
-    console.error("JWT has expired.");
-    console.error("Log in again and update TEST_JWT_TOKEN in backend/.env.");
-    process.exit(1);
-  }
-} else {
-  console.warn("JWT has no expiration claim.");
-}
-
-// 4. Create the Socket.IO client
-const socket = io(SERVER_URL, {
-  autoConnect: false,
-  auth: {
-    token,
+const users = [
+  {
+    name: "Rahul",
+    email: process.env.TEST_RAHUL_EMAIL,
+    password: process.env.TEST_RAHUL_PASSWORD,
   },
-  reconnection: false,
-  timeout: 10000,
-});
+  {
+    name: "Priya",
+    email: process.env.TEST_PRIYA_EMAIL,
+    password: process.env.TEST_PRIYA_PASSWORD,
+  },
+];
 
-// 5. Prevent duplicate error handling
-let finished = false;
+async function login(user) {
+  const response = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email: user.email,
+      password: user.password,
+    }),
+  });
 
-const finish = (exitCode) => {
-  if (finished) return;
+  const data = await response.json();
 
-  finished = true;
-  socket.disconnect();
-  process.exitCode = exitCode;
-};
+  if (!response.ok) {
+    throw new Error(`${user.name} login failed: ${data.message}`);
+  }
 
-// 6. Handle successful connection
-socket.on("connect", () => {
-  console.log("\nSocket connected successfully!");
-  console.log("Socket ID:", socket.id);
-  console.log("Authenticated user ID:", decoded.id);
+  // Node.js 22 supports getSetCookie().
+  const cookies = response.headers.getSetCookie();
+  const tokenCookie = cookies.find((cookie) =>
+    cookie.startsWith("token=")
+  );
 
-  finish(0);
-});
-
-// 7. Handle connection errors
-socket.on("connect_error", (error) => {
-  console.error("\nSocket connection failed:", error.message);
-
-  if (error.message === "User not found") {
-    console.error(
-      "The JWT user ID does not match a user in the connected MongoDB database."
-    );
-    console.error(
-      "Check the token's user ID and your backend database connection."
-    );
-  } else if (
-    error.message.toLowerCase().includes("token") ||
-    error.message.toLowerCase().includes("authentication")
-  ) {
-    console.error(
-      "Check whether the JWT is valid and JWT_SECRET matches the backend configuration."
+  if (!tokenCookie) {
+    throw new Error(
+      `No token cookie returned for ${user.name}. Check the login response.`
     );
   }
 
-  finish(1);
-});
+  const token = tokenCookie
+    .split(";")[0]
+    .slice("token=".length);
 
-// 8. Handle unexpected disconnection
-socket.on("disconnect", (reason) => {
-  console.log("Socket disconnected:", reason);
-});
+  console.log(`✅ ${user.name} logged in successfully`);
 
-// 9. Connect to the server
-console.log("\nConnecting to:", SERVER_URL);
-socket.connect();
+  return token;
+}
 
-// 10. Stop waiting if the connection takes too long
-const timeout = setTimeout(() => {
-  if (!finished) {
-    console.error("\nSocket connection timed out.");
-    finish(1);
+function connectSocket(user, token) {
+  return new Promise((resolve, reject) => {
+    const socket = createSocket(BASE_URL, {
+      auth: { token },
+      reconnection: false,
+      timeout: 10000,
+    });
+
+    const timer = setTimeout(() => {
+      socket.disconnect();
+      reject(new Error(`${user.name} Socket.IO connection timed out`));
+    }, 12000);
+
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      console.log(`🟢 ${user.name} connected to Socket.IO`);
+      resolve(socket);
+    });
+
+    socket.once("connect_error", (error) => {
+      clearTimeout(timer);
+      socket.disconnect();
+      reject(
+        new Error(`${user.name} socket connection failed: ${error.message}`)
+      );
+    });
+  });
+}
+
+function joinChat(socket, userName) {
+  return new Promise((resolve, reject) => {
+    socket.emit("joinChat", CHAT_ID, (result) => {
+      if (!result?.success) {
+        reject(
+          new Error(`${userName} could not join chat: ${result?.message}`)
+        );
+        return;
+      }
+
+      console.log(`✅ ${userName} joined the conversation`);
+      resolve();
+    });
+  });
+}
+
+async function sendMessage(token) {
+  const response = await fetch(`${BASE_URL}/api/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: `token=${token}`,
+    },
+    body: JSON.stringify({
+      chatId: CHAT_ID,
+      text: "Real-time test: Hello Priya!",
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(`Sending message failed: ${data.message}`);
   }
-}, 12000);
 
-timeout.unref();
+  console.log("📨 Message saved by the backend");
+  return data.data;
+}
+
+async function main() {
+  let rahulSocket;
+  let priyaSocket;
+
+  try {
+    if (users.some((user) => !user.email || !user.password)) {
+      throw new Error(
+        "Set TEST_RAHUL_EMAIL, TEST_RAHUL_PASSWORD, TEST_PRIYA_EMAIL, and TEST_PRIYA_PASSWORD in your .env file."
+      );
+    }
+
+    // Authenticate both users.
+    const rahulToken = await login(users[0]);
+    const priyaToken = await login(users[1]);
+
+    // Connect both users to Socket.IO.
+    rahulSocket = await connectSocket(users[0], rahulToken);
+    priyaSocket = await connectSocket(users[1], priyaToken);
+
+    // Join the same private conversation.
+    await joinChat(rahulSocket, "Rahul");
+    await joinChat(priyaSocket, "Priya");
+
+    // Register the listener before sending the message.
+    const messageReceived = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new Error("Priya did not receive the message within 8 seconds")
+        );
+      }, 8000);
+
+      priyaSocket.once("newMessage", (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+    });
+
+    // Send a message using the existing HTTP API.
+    const savedMessage = await sendMessage(rahulToken);
+
+    // Confirm Priya receives the Socket.IO event.
+    const receivedMessage = await messageReceived;
+
+    if (receivedMessage._id !== savedMessage._id) {
+      throw new Error(
+        "Priya received a different message than the one just sent."
+      );
+    }
+
+    console.log("\n🎉 REAL-TIME MESSAGE TEST PASSED");
+    console.log("Sender:", savedMessage.sender.name);
+    console.log("Message:", receivedMessage.text);
+    console.log("Message ID:", receivedMessage._id);
+    console.log("Priya received Rahul's message without polling!");
+  } catch (error) {
+    console.error("\n❌ REAL-TIME MESSAGE TEST FAILED");
+    console.error(error.message);
+    process.exitCode = 1;
+  } finally {
+    rahulSocket?.disconnect();
+    priyaSocket?.disconnect();
+  }
+}
+
+main();

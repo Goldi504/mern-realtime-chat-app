@@ -3,7 +3,26 @@ import User from "../models/User.js";
 
 export const protect = async (req, res, next) => {
   try {
-    const token = req.cookies?.token;
+    if (!process.env.JWT_SECRET) {
+      console.error("JWT_SECRET is not configured");
+
+      return res.status(500).json({
+        success: false,
+        message: "Server authentication configuration error",
+      });
+    }
+
+    // Prefer the HTTP-only cookie used by browser login.
+    let token = req.cookies?.token;
+
+    // Also support Authorization: Bearer <token> for Postman/API clients.
+    if (!token) {
+      const authorization = req.headers.authorization;
+
+      if (authorization?.startsWith("Bearer ")) {
+        token = authorization.slice(7).trim();
+      }
+    }
 
     if (!token) {
       return res.status(401).json({
@@ -12,18 +31,18 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    if (!process.env.JWT_SECRET) {
-      throw new Error("JWT_SECRET is not configured");
+    // Verify the token signature and expiration.
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (!decoded?.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token",
+      });
     }
 
-    // Verify the JWT
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
-
-    // Find the authenticated user
-    const user = await User.findById(decoded.id);
+    // Load the authenticated user.
+    const user = await User.findById(decoded.id).select("-password");
 
     if (!user) {
       return res.status(401).json({
@@ -32,14 +51,15 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    // Make the user available to the route
+    // Make the authenticated user available to controllers.
     req.user = user;
 
-    next();
+    return next();
   } catch (error) {
     if (
       error.name === "JsonWebTokenError" ||
-      error.name === "TokenExpiredError"
+      error.name === "TokenExpiredError" ||
+      error.name === "NotBeforeError"
     ) {
       return res.status(401).json({
         success: false,

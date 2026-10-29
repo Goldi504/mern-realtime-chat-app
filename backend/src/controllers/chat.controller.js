@@ -1,21 +1,30 @@
 import mongoose from "mongoose";
+
 import Chat from "../models/Chat.js";
 import User from "../models/User.js";
-import Message from "../models/Message.js";
 
 // POST /api/chats
-// Create a new direct conversation or return an existing one.
+// Create a private conversation or return the existing one.
 export const createChat = async (req, res) => {
   try {
-    console.log("Request method:", req.method);
-    console.log("Request URL:", req.originalUrl);
-    console.log("Content-Type:", req.headers["content-type"]);
-    console.log("Request body:", req.body);
-    console.log("Authenticated user:", req.user?._id);
-    const { userId } = req.body || {};
-    const currentUserId = req.user._id;
+    // Protect against missing or incorrectly parsed request bodies.
+    if (!req.body || typeof req.body !== "object") {
+      return res.status(400).json({
+        success: false,
+        message: "Request body must contain valid JSON",
+      });
+    }
 
-    // Validate the requested user ID.
+    const { userId } = req.body;
+    const currentUserId = req.user?._id;
+
+    if (!currentUserId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
     if (!userId || !mongoose.isValidObjectId(userId)) {
       return res.status(400).json({
         success: false,
@@ -23,15 +32,13 @@ export const createChat = async (req, res) => {
       });
     }
 
-    // Prevent a user from chatting with themselves.
-    if (currentUserId.equals(userId)) {
+    if (currentUserId.toString() === userId.toString()) {
       return res.status(400).json({
         success: false,
         message: "You cannot create a conversation with yourself",
       });
     }
 
-    // Verify that the other user exists.
     const otherUser = await User.findById(userId).select("_id");
 
     if (!otherUser) {
@@ -41,20 +48,21 @@ export const createChat = async (req, res) => {
       });
     }
 
-    // Find an existing direct conversation.
+    // Find an existing one-to-one conversation.
     let chat = await Chat.findOne({
       isGroupChat: false,
       participants: {
         $all: [currentUserId, otherUser._id],
         $size: 2,
       },
-    }).populate(
-      "participants",
-      "name email profilePic about isOnline lastSeen"
-    );
+    });
 
-    // Return the existing conversation if one exists.
     if (chat) {
+      chat = await Chat.findById(chat._id).populate(
+        "participants",
+        "name email profilePic about isOnline lastSeen"
+      );
+
       return res.status(200).json({
         success: true,
         message: "Conversation already exists",
@@ -62,13 +70,12 @@ export const createChat = async (req, res) => {
       });
     }
 
-    // Otherwise, create a new conversation.
+    // Create a new private conversation.
     chat = await Chat.create({
       participants: [currentUserId, otherUser._id],
       isGroupChat: false,
     });
 
-    // Populate participant details for the response.
     chat = await Chat.findById(chat._id).populate(
       "participants",
       "name email profilePic about isOnline lastSeen"
@@ -90,11 +97,20 @@ export const createChat = async (req, res) => {
 };
 
 // GET /api/chats
-// Retrieve all conversations belonging to the logged-in user.
+// Return the authenticated user's conversations.
 export const getChats = async (req, res) => {
   try {
+    const currentUserId = req.user?._id;
+
+    if (!currentUserId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
     const chats = await Chat.find({
-      participants: req.user._id,
+      participants: currentUserId,
     })
       .populate(
         "participants",
@@ -111,12 +127,13 @@ export const getChats = async (req, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    // Hide the logged-in user's own profile from the contact list.
+    // For private conversations, show the other participant.
     const formattedChats = chats.map((chat) => ({
       ...chat,
-      participants: chat.participants.filter(
+      participants: (chat.participants || []).filter(
         (participant) =>
-          participant._id.toString() !== req.user._id.toString()
+          participant &&
+          participant._id.toString() !== currentUserId.toString()
       ),
     }));
 
@@ -136,10 +153,18 @@ export const getChats = async (req, res) => {
 };
 
 // GET /api/chats/:chatId
-// Retrieve one conversation, but only for a participant.
+// Return a conversation only if the authenticated user belongs to it.
 export const getChatById = async (req, res) => {
   try {
     const { chatId } = req.params;
+    const currentUserId = req.user?._id;
+
+    if (!currentUserId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
 
     if (!mongoose.isValidObjectId(chatId)) {
       return res.status(400).json({
@@ -150,7 +175,7 @@ export const getChatById = async (req, res) => {
 
     const chat = await Chat.findOne({
       _id: chatId,
-      participants: req.user._id,
+      participants: currentUserId,
     }).populate(
       "participants",
       "name email profilePic about isOnline lastSeen"
