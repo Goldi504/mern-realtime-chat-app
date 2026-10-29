@@ -363,17 +363,32 @@ io.on("connection", (socket) => {
         });
       }
 
-      await Message.updateOne(
-        {
-          _id: message._id,
-          sender: { $ne: socket.user._id },
-        },
-        {
-          $addToSet: {
-            deliveredTo: socket.user._id,
-          },
-        }
-      );
+     const deliveryUpdate = await Message.updateOne(
+  {
+    _id: message._id,
+    sender: { $ne: socket.user._id },
+
+    // The message's chat must still contain this recipient.
+    chat: {
+      $in: await Chat.find({
+        _id: message.chat,
+        participants: socket.user._id,
+      }).distinct("_id"),
+    },
+  },
+  {
+    $addToSet: {
+      deliveredTo: socket.user._id,
+    },
+  }
+);
+
+if (deliveryUpdate.matchedCount === 0) {
+  return respond({
+    success: false,
+    message: "Message delivery denied: conversation access revoked",
+  });
+}
 
       const deliveryData = {
         messageId: message._id.toString(),
