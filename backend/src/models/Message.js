@@ -36,6 +36,19 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    fileName: {
+      type: String,
+      default: "",
+    },
+
+    fileMimeType: {
+      type: String,
+      default: "",
+    },
+    fileSize: {
+      type: Number,
+      default: 0,
+    },
 
     readBy: [
       {
@@ -43,6 +56,33 @@ const messageSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+    deliveredTo: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+    edited: {
+      type: Boolean,
+      default: false,
+    },
+
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+
+    deletedFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
+
+    isDeletedForEveryone: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
